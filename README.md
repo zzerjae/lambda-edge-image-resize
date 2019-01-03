@@ -1,0 +1,1 @@
+# lambda-edge-image-resize
