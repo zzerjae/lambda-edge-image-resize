@@ -61,7 +61,7 @@ exports.handler = async (event, context, callback) => {
                 
                 let byte_length = Buffer.byteLength(resizedImage, 'base64');
                 if (byte_length >= 1024000) {
-                    qual -= 1;
+                    qual -= 5;
                     console.log(`Info: Content-Length is ${byte_length}, ` +
                                 `trying again with quality ${qual}. // ` +
                                 originalKey);
