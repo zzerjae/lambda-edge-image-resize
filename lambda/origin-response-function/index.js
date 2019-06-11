@@ -40,91 +40,127 @@ exports.handler = async (event, context, callback) => {
     const qualityMatch = params.q;
     const formatMatch = params.f;
 
-    const originalFormat = key.match(/(.*)\.(.*)/)[2].toLowerCase();
+    let originalFormat = key.match(/(.*)\.(.*)/)[2].toLowerCase();
 
-    if (!supportImageTypes.some((type) => { return type == originalFormat })) {
-      responseUpdate(
-        403,
-        'Forbidden',
-        'Unsupported image type',
-        [{ key: 'Content-Type', value: 'text/plain' }],
-      );
+    if (
+      !supportImageTypes.some(type => {
+        return type == originalFormat;
+      })
+    ) {
+      responseUpdate(403, "Forbidden", "Unsupported image type", [
+        { key: "Content-Type", value: "text/plain" }
+      ]);
       callback(null, response);
+      return;
     }
 
     width = parseInt(sizeMatch[0], 10);
     height = parseInt(sizeMatch[1], 10);
-    type = typeMatch == 'enlargement' ? true : false;
-    quality = parseInt(qualityMatch, 10)
+    type = typeMatch == "crop" ? "cover" : typeMatch;
+    quality = parseInt(qualityMatch, 10);
 
     // correction for jpg required for 'Sharp'
-    requiredFormat = formatMatch == 'webp' ? 'webp' : originalFormat == 'jpg' ? 'jpeg' : originalFormat;
+    originalFormat = originalFormat == "jpg" ? "jpeg" : originalFormat;
+    requiredFormat =
+      formatMatch == "webp"
+        ? "webp"
+        : originalFormat == "jpg"
+          ? "jpeg"
+          : originalFormat;
 
     try {
       // get the source image file
-      const s3Object = await s3.getObject({
-        Bucket: bucket,
-        Key: key
-      }).promise();
+      const s3Object = await s3
+        .getObject({
+          Bucket: bucket,
+          Key: key
+        })
+        .promise();
       if (s3Object.ContentLength == 0) {
-        responseUpdate(
-          404,
-          'Not Found',
-          'The image does not exist.',
-          [{ key: 'Content-Type', value: 'text/plain' }],
-        );
+        responseUpdate(404, "Not Found", "The image does not exist.", [
+          { key: "Content-Type", value: "text/plain" }
+        ]);
         callback(null, response);
+        return;
       }
 
-      let resizedImage, byteLength;
+      let metaData,
+        resizedImage,
+        byteLength = 0;
 
-      if (requiredFormat != 'jpeg' && requiredFormat != 'webp' && requiredFormat != 'png' && requiredFormat != 'tiff') {
+      if (requiredFormat != "jpeg" && requiredFormat != "webp") {
         console.log(`Info: image format is ${requiredFormat}, trying to jpeg.`);
-        requiredFormat = 'jpeg';
+        requiredFormat = "jpeg";
       }
       while (1) {
-        resizedImage = await sharp(s3Object.Body)
-          .resize(width, height, { withoutEnlargement: type })
-          .toFormat(requiredFormat, { quality: quality })
-          .toBuffer();
+        resizedImage = await sharp(s3Object.Body).rotate();
+        metaData = await resizedImage.metadata();
 
-        byteLength = Buffer.byteLength(resizedImage, 'base64');
+        if (metaData.width > width || metaData.height > height) {
+          resizedImage.resize(width, height, { fit: type });
+        }
+        if (byteLength >= 1046528 || originalFormat != requiredFormat) {
+          resizedImage.toFormat(requiredFormat, { quality: quality });
+        }
+        resizedImage = await resizedImage.toBuffer();
+
+        byteLength = Buffer.byteLength(resizedImage, "base64");
+        if (byteLength == metaData.size) {
+          callback(null, response);
+          return;
+        }
         if (byteLength >= 1046528) {
           quality -= 10;
-          console.log(`Info: Content-Length is ${byteLength}, ` +
+          console.log(
+            `Info: Content-Length is ${byteLength}, ` +
             `trying again with quality ${quality}. // ` +
-            bucket + ' ## ' + key);
-        }
-        else {
+            bucket +
+            " ## " +
+            key
+          );
+        } else {
           break;
         }
       }
 
       responseUpdate(
         200,
-        'OK',
-        resizedImage.toString('base64'),
-        [{ key: 'Content-Type', value: 'image/' + requiredFormat }],
-        'base64'
+        "OK",
+        resizedImage.toString("base64"),
+        [{ key: "Content-Type", value: "image/" + requiredFormat }],
+        "base64"
       );
+      response.headers["cache-control"] = [
+        { key: "cache-control", value: "max-age=31536000" }
+      ];
       return callback(null, response);
-    }
-    catch (err) {
-      console.log(`for debugging. key, params === ${key} === ${params}`);
+    } catch (err) {
+      console.log(
+        `for debugging. key, params === ${key} === q=${params.q}&s=${
+        params.s
+        }&t=${params.t}`
+      );
       console.error(err);
-      return callback(err);
+      callback(null, response);
+      return;
     }
-  }
-  else {
+  } else {
     // allow the response to pass through
     callback(null, response);
+    return;
   }
 
-  function responseUpdate(status, statusDescription, body, contentHeader, bodyEncoding = undefined) {
+  function responseUpdate(
+    status,
+    statusDescription,
+    body,
+    contentHeader,
+    bodyEncoding = undefined
+  ) {
     response.status = status;
     response.statusDescription = statusDescription;
     response.body = body;
-    response.headers['content-type'] = contentHeader;
+    response.headers["content-type"] = contentHeader;
     if (bodyEncoding) {
       response.bodyEncoding = bodyEncoding;
     }
